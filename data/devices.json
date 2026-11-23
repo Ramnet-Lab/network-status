@@ -25,12 +25,12 @@
     "group": "Radios"
   },
   {
-    "name": "AS7 (Canal) on bat",
+    "name": "relay",
     "ip": "10.2.60.203",
     "group": "Radios"
   },
   {
-    "name": "AS3 on bat",
+    "name": "AS3 relay on bat",
     "ip": "10.2.60.217",
     "group": "Radios"
   },
@@ -65,7 +65,7 @@
     "group": "sensor"
   },
   {
-    "name": "AS9 (crashgate 24) on bat",
+    "name": "AS9 (crashgate 24) on sensor bat",
     "ip": "10.2.60.208",
     "group": "Radios"
   },
@@ -105,7 +105,7 @@
     "group": "sensor"
   },
   {
-    "name": "AS6 (canal) on bat",
+    "name": "AS6 (canal) on sensor bat",
     "ip": "10.2.60.211",
     "group": "Radios"
   },

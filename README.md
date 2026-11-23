@@ -29,6 +29,26 @@ own read-only management WebSocket. Served at `http://<host>:8766`.
 | `run-windows.bat` | native Windows launcher |
 | `start.command` | native macOS launcher |
 
+## Map tab
+
+A **Map** tab plots every device that has a location, colored by status, over
+switchable OpenStreetMap / Topographic / Satellite layers (Leaflet, vendored in
+`vendor/leaflet`). Click a 📍 on the Status tab to jump to that device.
+
+**Coordinates come from two sources:**
+- **Live radio GPS** — read from each Wave Relay's `gps_status` over the same
+  WebSocket as battery. Used automatically **when a radio has a satellite fix.**
+  Radios with "No Fix" publish no coordinates.
+- **Manual** — set Lat/Lon per device (Add form, or Edit a device). Used when
+  there's no live fix. A live fix overrides the manual point.
+
+> Tiles are fetched live (internet needed to view the map). Offline/local tile
+> caching is a planned follow-up — it needs a bounding box + zoom range.
+>
+> The GPS coordinate parse is confirmed only for the No-Fix case so far (no
+> radio had a fix during development); verify the Lat/Lon once a radio acquires
+> satellites, and tell me if the field format differs.
+
 ## Configuration (environment variables)
 
 | Var | Default | Meaning |

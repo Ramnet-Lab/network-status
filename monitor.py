@@ -60,6 +60,16 @@ devices = []   # [{"name", "ip", "group"}] in display order
 state = {}     # ip -> ping state
 
 
+def coord(val, lo, hi):
+    """Parse an optional latitude/longitude; blank -> None, out-of-range -> error."""
+    if val is None or str(val).strip() == "":
+        return None
+    f = float(val)  # ValueError bubbles up to the 400 handler
+    if not lo <= f <= hi:
+        raise ValueError("out of range")
+    return f
+
+
 def valid_address(addr):
     try:
         ipaddress.ip_address(addr)
@@ -141,9 +151,28 @@ def start_tracking(ip):
 
 
 power = {}  # ip -> {"voltage", "display", "battery_pct", "at"}
+gps = {}    # ip -> {"lat", "lon", "fix", "raw", "at"}  (from the radio GPS)
 
 
-async def fetch_power(gateway):
+def parse_gps(raw):
+    """Pull lat/lon out of the radio's gps_status text.
+
+    With no satellite fix the radio sends only "Fix Mode: No Fix" and no
+    coordinates. When fixed it adds Latitude/Longitude lines; parse decimal
+    degrees from them. (Format confirmed only for the No-Fix case so far —
+    see README; verify against a real fix.)
+    """
+    fix = "no fix" not in raw.lower()
+    lat = lon = None
+    mlat = re.search(r"Lat(?:itude)?\s*[:=]?\s*(-?\d+\.\d+)", raw, re.I)
+    mlon = re.search(r"Lon(?:gitude)?\s*[:=]?\s*(-?\d+\.\d+)", raw, re.I)
+    if mlat and mlon:
+        lat, lon = float(mlat.group(1)), float(mlon.group(1))
+    return {"lat": lat, "lon": lon, "fix": fix, "raw": raw.strip()}
+
+
+async def fetch_radio(gateway):
+    """One WebSocket read of battery + GPS for every node the gateway manages."""
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # radios use self-signed certs
@@ -151,9 +180,9 @@ async def fetch_power(gateway):
         "username": RADIO_USER, "password": RADIO_PASSWORD, "token": "status-page",
         "msgtype": "req", "command": "network_get", "protocol_version": "1.5.0",
         "intermediate_responses": True,
-        "variables": {"supply_voltage": {}, "supply_battery_percent_display": {}},
+        "variables": {"supply_voltage": {}, "supply_battery_percent_display": {}, "gps_status": {}},
     }
-    found = {}
+    pw, loc = {}, {}
     async with websockets.connect(f"wss://{gateway}/xxx", ssl=ctx, open_timeout=5) as ws:
         await ws.send(json.dumps(msg))
         while True:
@@ -165,13 +194,16 @@ async def fetch_power(gateway):
                 volts = (v.get("supply_voltage") or {}).get("value", "")
                 disp = (v.get("supply_battery_percent_display") or {}).get("value", "")
                 m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*%?\s*", disp)  # radio sends e.g. "39"
-                found[ip] = {
+                pw[ip] = {
                     "voltage": volts.replace(" Volts", " V"),
                     "display": disp,
                     "battery_pct": float(m.group(1)) if m else None,
                 }
+                raw = (v.get("gps_status") or {}).get("value", "")
+                if raw:
+                    loc[ip] = parse_gps(raw)
             if "final_status" in reply:
-                return found
+                return pw, loc
 
 
 def power_poller():
@@ -180,14 +212,16 @@ def power_poller():
             radios = [d["ip"] for d in devices if d["group"].lower().startswith("radio")]
         for gw in dict.fromkeys(POWER_GATEWAYS + radios):
             try:
-                found = asyncio.run(fetch_power(gw))
+                pw, loc = asyncio.run(fetch_radio(gw))
             except Exception:
                 continue
-            if found:
+            if pw or loc:
                 now = time.time()
                 with lock:
-                    for ip, rec in found.items():
+                    for ip, rec in pw.items():
                         power[ip] = {**rec, "at": now}
+                    for ip, rec in loc.items():
+                        gps[ip] = {**rec, "at": now}
                 break
         time.sleep(POWER_EVERY)
 
@@ -197,6 +231,16 @@ def power_for(ip, now):
     if not p or now - p["at"] > POWER_STALE:
         return None
     return {k: p[k] for k in ("voltage", "display", "battery_pct")}
+
+
+def location_for(dev, now):
+    """Live radio GPS fix wins; otherwise the manually set coordinate."""
+    g = gps.get(dev["ip"])
+    if g and g["lat"] is not None and now - g["at"] <= POWER_STALE:
+        return {"lat": g["lat"], "lon": g["lon"], "source": "gps"}
+    if dev.get("lat") is not None and dev.get("lon") is not None:
+        return {"lat": dev["lat"], "lon": dev["lon"], "source": "manual"}
+    return None
 
 
 def snapshot():
@@ -221,12 +265,13 @@ def snapshot():
                 "latency_ms": st["latency"] if since_ok <= OFFLINE_AFTER else None,
                 "last_ok_ago": round(now - st["last_ok"]) if st["last_ok"] else None,
                 "power": power_for(d["ip"], now),
+                "location": location_for(d, now),
             })
     return out
 
 
-def upsert_device(name, ip, group, orig_ip=None):
-    """Add a device, or update the one at orig_ip (label, group, and address)."""
+def upsert_device(name, ip, group, orig_ip=None, lat=None, lon=None):
+    """Add a device, or update the one at orig_ip (label, address, group, coords)."""
     key = orig_ip or ip
     with lock:
         if orig_ip and orig_ip != ip and any(d["ip"] == ip for d in devices):
@@ -237,9 +282,10 @@ def upsert_device(name, ip, group, orig_ip=None):
                     state.pop(d["ip"], None)
                     start_tracking(ip)
                 d["name"], d["ip"], d["group"] = name, ip, group
+                d["lat"], d["lon"] = lat, lon
                 break
         else:
-            devices.append({"name": name, "ip": ip, "group": group})
+            devices.append({"name": name, "ip": ip, "group": group, "lat": lat, "lon": lon})
             start_tracking(ip)
         save_devices(devices)
     return None
@@ -269,10 +315,14 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/api/status":
+        path = urlparse(self.path).path
+        if path == "/api/status":
             self.send_json(200, snapshot())
-        elif self.path in ("/", "/index.html"):
+        elif path in ("/", "/index.html"):
+            self.path = "/index.html"
             super().do_GET()
+        elif path.startswith("/vendor/") and ".." not in path:
+            super().do_GET()  # served from HERE by SimpleHTTPRequestHandler
         else:
             self.send_error(404)
 
@@ -286,13 +336,17 @@ class Handler(SimpleHTTPRequestHandler):
             ip = str(data.get("ip", "")).strip()
             group = str(data.get("group", "")).strip()[:40] or "Other"
             orig_ip = str(data.get("orig_ip") or "").strip() or None
+            lat = coord(data.get("lat"), -90, 90)
+            lon = coord(data.get("lon"), -180, 180)
         except (ValueError, AttributeError):
             return self.send_json(400, {"error": "bad request"})
         if not name:
             return self.send_json(400, {"error": "Name is required"})
         if not valid_address(ip):
             return self.send_json(400, {"error": "Not a valid IP address or hostname"})
-        err = upsert_device(name, ip, group, orig_ip)
+        if (lat is None) != (lon is None):
+            return self.send_json(400, {"error": "Enter both latitude and longitude, or neither"})
+        err = upsert_device(name, ip, group, orig_ip, lat, lon)
         if err:
             return self.send_json(400, {"error": err})
         self.send_json(200, {"ok": True})

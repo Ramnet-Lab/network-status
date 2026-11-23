@@ -14,6 +14,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY monitor.py index.html ./
+COPY vendor ./vendor
 
 # Device list lives on a mounted volume so it survives container rebuilds.
 ENV DEVICES_FILE=/data/devices.json \

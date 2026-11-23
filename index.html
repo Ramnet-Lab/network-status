@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Network Status</title>
+<link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+<script src="/vendor/leaflet/leaflet.js"></script>
 <style>
   :root { --bg:#0f1419; --card:#1a2129; --line:#2a333d; --text:#e6e9ec; --muted:#8a96a3;
           --green:#22c55e; --yellow:#eab308; --red:#ef4444; --gray:#64748b; --accent:#3b82f6; }
@@ -11,18 +13,24 @@
   body { margin:0; background:var(--bg); color:var(--text);
          font:15px/1.4 -apple-system, system-ui, sans-serif; padding:24px 16px; }
   .wrap { max-width:1100px; margin:0 auto; }
-  header { display:flex; justify-content:space-between; align-items:baseline;
-           flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+  header { display:flex; justify-content:space-between; align-items:center;
+           flex-wrap:wrap; gap:8px 16px; margin-bottom:16px; }
   h1 { margin:0; font-size:22px; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
        margin:24px 0 10px; font-weight:600; }
   .summary { color:var(--muted); }
   .summary b { color:var(--text); }
 
+  .tabs { display:flex; gap:4px; }
+  .tab { background:var(--card); color:var(--muted); border:1px solid var(--line);
+         padding:7px 16px; border-radius:8px; cursor:pointer; font:inherit; }
+  .tab.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+
   form { display:flex; flex-wrap:wrap; gap:8px; background:var(--card); padding:12px;
          border-radius:10px; align-items:center; }
   input { background:var(--bg); color:var(--text); border:1px solid var(--line);
           border-radius:6px; padding:8px 10px; font:inherit; flex:1 1 150px; min-width:0; }
+  input.coord { flex:1 1 90px; }
   button { font:inherit; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; }
   .primary { background:var(--accent); color:#fff; }
   .ghost { background:transparent; color:var(--muted); }
@@ -47,6 +55,10 @@
   .red .dot { background:var(--red); box-shadow:0 0 6px var(--red); animation:blink 1s infinite; }
   @keyframes blink { 50% { opacity:.3; } }
   .name { font-weight:600; overflow-wrap:anywhere; }
+  .pin { display:inline-block; margin-top:3px; font-size:12px; font-weight:400;
+         color:var(--accent); cursor:pointer; text-decoration:none; }
+  .pin:hover { text-decoration:underline; }
+  .pin.manual { color:var(--muted); }
   .ip { color:var(--muted); font-family:ui-monospace, Menlo, monospace; font-size:14px; }
   a.ip { text-decoration:none; }
   a.ip:hover { color:var(--accent); text-decoration:underline; }
@@ -58,51 +70,69 @@
   .actions { display:flex; justify-content:flex-end; }
   .actions button { background:none; color:var(--muted); padding:4px 6px; font-size:13px; }
   .actions button:hover { color:var(--text); }
-  form.row { border-left-color:var(--accent); grid-template-columns:14px minmax(140px,2fr) minmax(120px,1.2fr) 1fr auto; }
-  form.row input { padding:6px 8px; flex:none; width:100%; }
-  form.row .formmsg { grid-column:2 / -1; }
+  form.row { display:flex; flex-wrap:wrap; border-left-color:var(--accent); }
+  form.row input { padding:6px 8px; }
   .editbtns { display:flex; gap:6px; }
   .editbtns button { padding:6px 12px; }
   @media (max-width:720px) {
-    .row { grid-template-columns:14px 1fr auto; }
+    .row:not(form) { grid-template-columns:14px 1fr auto; }
     .row.head { display:none; }
     .row > .ip, .row > .loss, .row > .lat, .row > .pwr { grid-column:2; }
     .row > .stat { display:none; }
     .row > .actions { grid-row:1; grid-column:3; }
-    form.row { grid-template-columns:14px 1fr; }
-    form.row > * { grid-column:2; }
   }
   .err { margin-bottom:12px; color:var(--red); display:none; }
   .empty { color:var(--muted); margin-top:24px; }
+
+  #mapView { display:none; }
+  #map { height:72vh; min-height:420px; border-radius:10px; border:1px solid var(--line); }
+  .mapnote { color:var(--muted); font-size:13px; margin:10px 2px 0; }
+  .leaflet-popup-content { font:14px/1.4 -apple-system, system-ui, sans-serif; }
+  .leaflet-popup-content b { font-size:15px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>Network Status</h1>
+    <div class="tabs">
+      <button class="tab on" data-tab="status">Status</button>
+      <button class="tab" data-tab="map">Map</button>
+    </div>
     <div class="summary" id="summary"></div>
   </header>
   <div class="err" id="err">Lost connection to monitor.py. Is it still running?</div>
 
-  <form id="form" autocomplete="off">
-    <input id="f-name" placeholder="Label (e.g. AS9 Radio)" required>
-    <input id="f-ip" placeholder="IP address or hostname" required>
-    <input id="f-group" placeholder="Group (e.g. Radios, Cameras)" list="groups">
-    <datalist id="groups"></datalist>
-    <button class="primary" id="f-submit">Add device</button>
-        <div class="formmsg" id="f-msg"></div>
-  </form>
+  <!-- STATUS VIEW -->
+  <div id="statusView">
+    <form id="form" autocomplete="off">
+      <input id="f-name" placeholder="Label (e.g. AS9 Radio)" required>
+      <input id="f-ip" placeholder="IP address or hostname" required>
+      <input id="f-group" placeholder="Group (e.g. Radios, Cameras)" list="groups">
+      <datalist id="groups"></datalist>
+      <input id="f-lat" class="coord" placeholder="Lat (optional)">
+      <input id="f-lon" class="coord" placeholder="Lon (optional)">
+      <button class="primary" id="f-submit">Add device</button>
+      <div class="formmsg" id="f-msg"></div>
+    </form>
+    <div id="groupsOut"></div>
+  </div>
 
-  <div id="groupsOut"></div>
+  <!-- MAP VIEW -->
+  <div id="mapView">
+    <div id="map"></div>
+    <p class="mapnote" id="mapnote"></p>
+  </div>
 </div>
 <script>
 const LABEL = { green:"Steady", yellow:"Packet drops", red:"Offline", pending:"Checking…" };
+const COLOR = { green:"#22c55e", yellow:"#eab308", red:"#ef4444", pending:"#64748b" };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let last = [];
-let editing = null;  // IP of the card currently open for editing
+let editing = null;  // IP of the row currently open for editing
 
-// Sensors open their web page on port 8080, radios on the default port.
+// ---------- shared cells ----------
 function ipLink(d) {
   const g = d.group.toLowerCase();
   if (g.startsWith("sensor")) return `http://${d.ip}:8080`;
@@ -115,7 +145,13 @@ function ipCell(d) {
     ? `<a class="ip" href="${esc(url)}" target="_blank" rel="noopener" title="Open ${esc(url)}">${esc(d.ip)}</a>`
     : `<span class="ip">${esc(d.ip)}</span>`;
 }
-
+function pinCell(d) {
+  if (!d.location) return "";
+  const { lat, lon, source } = d.location;
+  const cls = source === "gps" ? "pin" : "pin manual";
+  const tag = source === "gps" ? "GPS" : "set";
+  return `<a class="${cls}" data-focus="${esc(d.ip)}" title="Show on map (${tag})">📍 ${lat.toFixed(5)}, ${lon.toFixed(5)}</a>`;
+}
 function powerRank(d) {
   const p = d.power;
   if (!p) return 1e6;
@@ -133,35 +169,40 @@ function powerCell(d) {
   return `<span class="pwr muted" title="${tip}">${esc(p.display || p.voltage || "–")}</span>`;
 }
 
+// ---------- status list ----------
 function row(d) {
-  if (d.ip === editing) return `<form class="row" data-orig="${esc(d.ip)}">
-    <span></span>
-    <input name="name" value="${esc(d.name)}" placeholder="Label" required>
-    <input name="ip" value="${esc(d.ip)}" placeholder="IP address" required>
-    <input name="group" value="${esc(d.group)}" placeholder="Group" list="groups">
-    <div class="editbtns"><button class="primary">Save</button>
-      <button class="ghost" type="button" data-cancel>Cancel</button></div>
-    <div class="formmsg"></div>
-  </form>`;
+  if (d.ip === editing) {
+    const lat = d.location && d.location.source === "manual" ? d.location.lat : (d.lat ?? "");
+    const lon = d.location && d.location.source === "manual" ? d.location.lon : (d.lon ?? "");
+    return `<form class="row" data-orig="${esc(d.ip)}">
+      <input name="name" value="${esc(d.name)}" placeholder="Label" required>
+      <input name="ip" value="${esc(d.ip)}" placeholder="IP address" required>
+      <input name="group" value="${esc(d.group)}" placeholder="Group" list="groups">
+      <input name="lat" class="coord" value="${lat}" placeholder="Lat">
+      <input name="lon" class="coord" value="${lon}" placeholder="Lon">
+      <div class="editbtns"><button class="primary">Save</button>
+        <button class="ghost" type="button" data-cancel>Cancel</button></div>
+      <div class="formmsg"></div>
+    </form>`;
+  }
   const tail = d.status === "red"
     ? `<span class="lat muted">Last seen ${d.last_ok_ago == null ? "never" : d.last_ok_ago + "s ago"}</span>`
     : `<span class="lat num">${d.latency_ms == null ? "–" : d.latency_ms.toFixed(1) + " ms"}</span>`;
   return `<div class="row ${d.status}">
     <span class="dot"></span>
-    <span class="name">${esc(d.name)}</span>
+    <span class="name">${esc(d.name)}${pinCell(d)}</span>
     ${ipCell(d)}
     <span class="stat muted">${LABEL[d.status]}</span>
     <span class="loss num">${d.loss_pct ?? "–"}%</span>
     ${tail}
     ${powerCell(d)}
     <span class="actions">
-      <button data-edit="${esc(d.ip)}" title="Edit label, IP, or group">Edit</button>
+      <button data-edit="${esc(d.ip)}" title="Edit label, IP, group, coordinates">Edit</button>
       <button data-del="${esc(d.ip)}" title="Remove">✕</button>
     </span>
   </div>`;
 }
 
-// Column sorting (applies inside every group; remembered in this browser)
 const COLS = [["name","Name"],["ip","IP"],["status","Status"],["loss","Loss"],["latency","Latency"],["power","Power"]];
 const SEVERITY = { red:0, yellow:1, pending:2, green:3 };
 let sort = { key:null, dir:1 };
@@ -178,14 +219,12 @@ const SORTERS = {
   status: (a, b) => SEVERITY[a.status] - SEVERITY[b.status],
   loss: (a, b) => (a.loss_pct ?? -1) - (b.loss_pct ?? -1),
   latency: (a, b) => (a.latency_ms ?? Infinity) - (b.latency_ms ?? Infinity),
-  // on battery first (lowest charge first), then wall power, then no reading
   power: (a, b) => powerRank(a) - powerRank(b),
 };
 function sorted(list) {
   if (!sort.key) return list;
   return [...list].sort((a, b) => sort.dir * SORTERS[sort.key](a, b) || SORTERS.name(a, b));
 }
-
 function head() {
   const cols = COLS.map(([k, label]) => {
     const arrow = sort.key === k ? (sort.dir > 0 ? " ▲" : " ▼") : "";
@@ -193,18 +232,19 @@ function head() {
   }).join("");
   return `<div class="row head"><span></span>${cols}<span></span></div>`;
 }
-
 function render(data, force) {
   last = data;
   const n = s => data.filter(d => d.status === s).length;
   $("summary").innerHTML = `<b>${n("green")}</b> up · <b>${n("yellow")}</b> dropping · <b>${n("red")}</b> offline`;
   const groups = [...new Set(data.map(d => d.group))];
   $("groups").innerHTML = groups.map(g => `<option value="${esc(g)}">`).join("");
-  if (editing && !force) return;  // don't wipe the edit form while typing
-  $("groupsOut").innerHTML = data.length ? groups.map(g => `
-    <h2>${esc(g)}</h2>
-    <div class="list">${head()}${sorted(data.filter(d => d.group === g)).map(row).join("")}</div>`).join("")
-    : `<p class="empty">No devices yet. Add one above.</p>`;
+  if (!(editing && !force)) {  // don't wipe an open edit form while typing
+    $("groupsOut").innerHTML = data.length ? groups.map(g => `
+      <h2>${esc(g)}</h2>
+      <div class="list">${head()}${sorted(data.filter(d => d.group === g)).map(row).join("")}</div>`).join("")
+      : `<p class="empty">No devices yet. Add one above.</p>`;
+  }
+  if (mapReady) updateMarkers(data);
 }
 
 async function tick(force) {
@@ -213,7 +253,6 @@ async function tick(force) {
     $("err").style.display = "none";
   } catch (e) { $("err").style.display = "block"; }
 }
-
 async function save(body) {
   const r = await fetch("/api/devices", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
   return r.ok ? null : ((await r.json()).error || "Could not save");
@@ -221,12 +260,12 @@ async function save(body) {
 
 $("form").addEventListener("submit", async e => {
   e.preventDefault();
-  const err = await save({ name:$("f-name").value, ip:$("f-ip").value, group:$("f-group").value });
+  const err = await save({ name:$("f-name").value, ip:$("f-ip").value, group:$("f-group").value,
+                           lat:$("f-lat").value, lon:$("f-lon").value });
   if (err) { $("f-msg").textContent = err; return; }
   $("form").reset(); $("f-msg").textContent = "";
   tick(true);
 });
-
 $("groupsOut").addEventListener("submit", async e => {
   e.preventDefault();
   const f = e.target, v = Object.fromEntries(new FormData(f));
@@ -235,9 +274,8 @@ $("groupsOut").addEventListener("submit", async e => {
   editing = null;
   tick(true);
 });
-
 $("groupsOut").addEventListener("click", async e => {
-  const t = e.target, del = t.dataset.del, edit = t.dataset.edit;
+  const t = e.target, del = t.dataset.del, edit = t.dataset.edit, focus = t.dataset.focus;
   if (del) {
     const d = last.find(x => x.ip === del);
     if (!confirm(`Stop tracking ${d ? d.name : del} (${del})?`)) return;
@@ -247,8 +285,10 @@ $("groupsOut").addEventListener("click", async e => {
     editing = edit;
     render(last, true);
     $("groupsOut").querySelector("form.row input[name=ip]").focus();
+  } else if (focus) {
+    e.preventDefault();
+    focusOnMap(focus);
   } else if (t.dataset.sort) {
-    // click a column: sort ascending, click again: descending, third click: back to original order
     const k = t.dataset.sort;
     if (sort.key !== k) sort = { key:k, dir:1 };
     else if (sort.dir > 0) sort.dir = -1;
@@ -261,6 +301,94 @@ $("groupsOut").addEventListener("click", async e => {
   }
 });
 
+// ---------- map ----------
+let map = null, mapReady = false, markers = {}, fitted = false;
+// Tile layers. URLs centralized so they can later point at a local /tiles cache.
+function baseLayers() {
+  return {
+    "OpenStreetMap": L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      { maxZoom:19, attribution:"© OpenStreetMap contributors" }),
+    "Topographic": L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      { maxZoom:17, attribution:"© OpenTopoMap (CC-BY-SA)" }),
+    "Satellite": L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom:19, attribution:"Imagery © Esri" }),
+  };
+}
+function initMap() {
+  if (mapReady) return;
+  map = L.map("map", { worldCopyJump:true }).setView([39.5, -98.35], 4);  // US fallback
+  const layers = baseLayers();
+  layers["OpenStreetMap"].addTo(map);
+  L.control.layers(layers, null, { collapsed:false }).addTo(map);
+  mapReady = true;
+  updateMarkers(last);
+}
+function located(data) { return data.filter(d => d.location); }
+function updateMarkers(data) {
+  if (!mapReady) return;
+  const present = new Set();
+  for (const d of located(data)) {
+    present.add(d.ip);
+    const { lat, lon } = d.location;
+    const color = COLOR[d.status] || COLOR.pending;
+    const batt = d.power && d.power.battery_pct != null ? ` · 🔋 ${Math.round(d.power.battery_pct)}%` : "";
+    const popup = `<b>${esc(d.name)}</b><br>${esc(d.ip)}<br>${LABEL[d.status]}${batt}`
+      + `<br><span style="color:#888">${lat.toFixed(5)}, ${lon.toFixed(5)} (${d.location.source})</span>`;
+    let m = markers[d.ip];
+    if (!m) {
+      m = markers[d.ip] = L.circleMarker([lat, lon],
+        { radius:9, weight:2, color:"#fff", fillOpacity:0.9 }).addTo(map);
+    }
+    m.setLatLng([lat, lon]);
+    m.setStyle({ fillColor:color });
+    m.bindPopup(popup);
+  }
+  for (const ip of Object.keys(markers)) {
+    if (!present.has(ip)) { map.removeLayer(markers[ip]); delete markers[ip]; }
+  }
+  const note = located(data).length;
+  $("mapnote").textContent = note
+    ? `${note} device${note>1?"s":""} plotted. Radios with a live GPS fix update automatically; others use the coordinates you set (Edit a device on the Status tab).`
+    : "No device has coordinates yet. The radios currently report No GPS Fix. Set a location: Status tab → Edit a device → fill Lat/Lon.";
+  // Fit only once the container actually has a size, or bounds come out wrong.
+  if (!fitted && note && map.getSize().x > 0) {
+    const g = L.featureGroup(Object.values(markers));
+    map.fitBounds(g.getBounds().pad(0.25), { maxZoom:16 });
+    fitted = true;
+  }
+}
+function focusOnMap(ip) {
+  showTab("map");
+  const d = last.find(x => x.ip === ip);
+  if (!d || !d.location) return;
+  map.setView([d.location.lat, d.location.lon], 16);
+  const m = markers[ip];
+  if (m) m.openPopup();
+}
+
+// ---------- tabs ----------
+function showTab(name) {
+  const onMap = name === "map";
+  // Explicit block (not ""): #mapView has display:none in CSS, and clearing the
+  // inline style would let that CSS keep it hidden.
+  $("statusView").style.display = onMap ? "none" : "block";
+  $("mapView").style.display = onMap ? "block" : "none";
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("on", t.dataset.tab === name));
+  try { localStorage.setItem("tab", name); } catch (e) {}
+  if (onMap) {
+    initMap();
+    // container just became visible: give it a size, then (re)draw + fit.
+    requestAnimationFrame(() => { map.invalidateSize(); updateMarkers(last); });
+  }
+}
+document.querySelector(".tabs").addEventListener("click", e => {
+  if (e.target.dataset.tab) showTab(e.target.dataset.tab);
+});
+
+let startTab = "status";
+try { startTab = localStorage.getItem("tab") || "status"; } catch (e) {}
+showTab(startTab);
 tick();
 setInterval(tick, 1000);
 </script>
