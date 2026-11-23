@@ -298,12 +298,14 @@ function render(data, force) {
 
 async function tick(force) {
   try {
-    render(await (await fetch("/api/status")).json(), force);
+    const data = await (await fetch("/api/status")).json();
+    let tr = [];
+    try { tr = await (await fetch("/api/tracks")).json(); } catch (e) {}
+    computeMatches(data, tr);         // must run before render so the map hides covered devices
+    render(data, force);
+    if (mapReady) updateTracks(tr);
     $("err").style.display = "none";
   } catch (e) { $("err").style.display = "block"; }
-  if (mapReady) {
-    try { updateTracks(await (await fetch("/api/tracks")).json()); } catch (e) {}
-  }
 }
 async function save(body) {
   const r = await fetch("/api/devices", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
@@ -387,6 +389,7 @@ function updateMarkers(data) {
   if (!mapReady) return;
   const present = new Set();
   for (const d of located(data)) {
+    if (coveredIps.has(d.ip)) continue;  // a CoT track already represents this node
     present.add(d.ip);
     const { lat, lon } = d.location;
     const batt = d.power && d.power.battery_pct != null ? ` · 🔋 ${Math.round(d.power.battery_pct)}%` : "";
@@ -427,6 +430,31 @@ const AFFIL_COLOR = { friendly:"#3b82f6", hostile:"#ef4444", neutral:"#22c55e",
   unknown:"#eab308", suspect:"#f59e0b", pending:"#9ca3af",
   assumedfriend:"#3b82f6", joker:"#ef4444", faker:"#ef4444" };
 let trackMarkers = {};
+let coveredIps = new Set();  // devices covered by a matching CoT track (hidden on map)
+
+function distM(la1, lo1, la2, lo2) {
+  const R = 6371000, r = Math.PI / 180;
+  const dla = (la2 - la1) * r, dlo = (lo2 - lo1) * r;
+  const a = Math.sin(dla/2)**2 + Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dlo/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+// Match each CoT track to the nearest located device (<=50 m). A match means
+// they are the same node: hide our device marker, relabel the track with our
+// custom name, and give the track the device's portal link.
+function computeMatches(devices, tracks) {
+  coveredIps = new Set();
+  const located = devices.filter(d => d.location);
+  for (const t of tracks) {
+    let best = null, bestM = 50;
+    for (const d of located) {
+      const m = distM(t.lat, t.lon, d.location.lat, d.location.lon);
+      if (m < bestM) { bestM = m; best = d; }
+    }
+    if (best) { t._devName = best.name; t._portal = ipLink(best); coveredIps.add(best.ip); }
+    else { t._devName = null; t._portal = null; }
+  }
+}
+
 function trackIcon(t) {
   const c = AFFIL_COLOR[t.affil] || "#eab308";
   if (t.dim === "air") {
@@ -456,12 +484,17 @@ function updateTracks(data) {
     }
     m.setLatLng([t.lat, t.lon]);
     if (m._sig !== sig) { m.setIcon(trackIcon(t)); m._sig = sig; }
-    if (m._lbl !== t.name) { m.setTooltipContent(esc(t.name)); m._lbl = t.name; }
+    const label = t._devName || t.name;  // prefer our custom name over the TAK serial
+    if (m._lbl !== label) { m.setTooltipContent(esc(label)); m._lbl = label; }
     const kn = t.speed != null ? ` · ${(t.speed * 1.94384).toFixed(0)} kn` : "";
     const hdg = t.course != null ? `<br>hdg ${Math.round(t.course)}°${kn}` : "";
     const alt = t.hae ? `<br>alt ${Math.round(t.hae)} m` : "";
-    m.bindPopup(`<b>${esc(t.name)}</b><br><span style="color:#888">${esc(t.type)}</span>`
-      + `<br>${t.affil} ${t.dim}${hdg}${alt}`);
+    const portal = t._portal
+      ? `<br><a class="portal" href="${esc(t._portal)}" target="_blank" rel="noopener">Open node portal ↗</a>`
+      : "";
+    const sub = t._devName ? `${esc(t.name)} · ${esc(t.type)}` : esc(t.type);
+    m.bindPopup(`<b>${esc(label)}</b><br><span style="color:#888">${sub}</span>`
+      + `<br>${t.affil} ${t.dim}${hdg}${alt}${portal}`);
   }
   for (const uid of Object.keys(trackMarkers)) {
     if (!present.has(uid)) { map.removeLayer(trackMarkers[uid]); delete trackMarkers[uid]; }

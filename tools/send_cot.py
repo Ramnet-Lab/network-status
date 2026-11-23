@@ -171,7 +171,16 @@ def run_fig8(a):
             course, speed = 90.0, 0.0
         xml = build_point(lat, lon, a.callsign, a.uid, a.type, a.stale_min,
                           course=course, speed=speed, hae=a.alt)
-        s.sendto(_encode(a, xml), (a.group, a.port))
+        try:
+            s.sendto(_encode(a, xml), (a.group, a.port))
+        except OSError:
+            # mesh NIC address briefly flapped; rebuild the socket and keep going
+            try:
+                s.close()
+            except OSError:
+                pass
+            time.sleep(1)
+            s = _sender(a)
         prev = (lat, lon)
         time.sleep(a.interval)
     s.close()
