@@ -112,6 +112,9 @@ def _sender(a):
     s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("b", a.ttl))
     if a.iface:
         s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(a.iface))
+        # Bind the source to the mesh NIC so the frame physically egresses THAT
+        # interface, not the default-route NIC (multi-homed macOS quirk).
+        s.bind((a.iface, 0))
     return s
 
 
@@ -122,6 +125,60 @@ def _encode(a, xml):
     return xml.encode()
 
 
+class Transport:
+    """Unified send: multicast UDP by default, or persistent TCP to a TAK client
+    (ip:port, e.g. WinTAK's 4242) when --tcp is given. TCP sidesteps mesh
+    multicast egress entirely and is the reliable path to a known endpoint."""
+    def __init__(self, a):
+        import time
+        self.a, self.time = a, time
+        if a.tcp:
+            host, port = a.tcp.rsplit(":", 1)
+            self.host, self.port = host, int(port)
+            self._connect()
+        else:
+            self.sock = _sender(a)
+
+    def _connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect((self.host, self.port))
+
+    def send(self, xml):
+        a = self.a
+        if a.tcp:
+            from takproto import xml2proto, TAKProtoVer
+            data = xml2proto(xml, TAKProtoVer.STREAM)  # TCP stream framing
+            try:
+                self.sock.sendall(data)
+            except OSError:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
+                self.time.sleep(1)
+                self._connect()
+                self.sock.sendall(data)
+        else:
+            data = _encode(a, xml)
+            for _ in range(a.count):
+                try:
+                    self.sock.sendto(data, (a.group, a.port))
+                except OSError:
+                    try:
+                        self.sock.close()
+                    except OSError:
+                        pass
+                    self.time.sleep(1)
+                    self.sock = _sender(a)
+
+    def close(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
 def run_track(a):
     """Stream a moving ground track: same UID, advancing position + course/speed,
     so WinTAK renders a track with heading and breadcrumbs."""
@@ -130,16 +187,16 @@ def run_track(a):
         a.error = True
         raise SystemExit("--lat and --lon are required for --track")
     cot_type = a.type if a.type != "a-u-G" else "a-f-G"  # default a moving ground track to friendly
-    s = _sender(a)
+    tx = Transport(a)
     lat, lon = a.lat, a.lon
     steps = max(1, int(a.duration / a.interval))
     for i in range(steps):
         xml = build_point(lat, lon, a.callsign, a.uid, cot_type, a.stale_min,
                           course=a.course, speed=a.speed)
-        s.sendto(_encode(a, xml), (a.group, a.port))
+        tx.send(xml)
         time.sleep(a.interval)
         lat, lon = advance(lat, lon, a.course, a.speed * a.interval)
-    s.close()
+    tx.close()
     print(f"Track done: {steps} updates, uid={a.uid}, "
           f"course {a.course:.0f}deg @ {a.speed:.0f} m/s over {a.duration:.0f}s")
 
@@ -152,7 +209,7 @@ def run_fig8(a):
     lat0, lon0 = a.lat, a.lon
     mlat = 111320.0
     mlon = 111320.0 * math.cos(math.radians(lat0))
-    s = _sender(a)
+    tx = Transport(a)
     t0 = time.time()
     end = t0 + a.duration
     prev = None
@@ -171,19 +228,10 @@ def run_fig8(a):
             course, speed = 90.0, 0.0
         xml = build_point(lat, lon, a.callsign, a.uid, a.type, a.stale_min,
                           course=course, speed=speed, hae=a.alt)
-        try:
-            s.sendto(_encode(a, xml), (a.group, a.port))
-        except OSError:
-            # mesh NIC address briefly flapped; rebuild the socket and keep going
-            try:
-                s.close()
-            except OSError:
-                pass
-            time.sleep(1)
-            s = _sender(a)
+        tx.send(xml)
         prev = (lat, lon)
         time.sleep(a.interval)
-    s.close()
+    tx.close()
     print(f"Fig-8 done: uid={a.uid}, type={a.type}, r={a.radius}m alt={a.alt}m period={a.period}s")
 
 
@@ -202,6 +250,8 @@ def main():
     p.add_argument("--stale-min", type=int, default=60)
     p.add_argument("--proto", action="store_true",
                    help="send as TAK Protocol v2 mesh protobuf (needs: pip install takproto)")
+    p.add_argument("--tcp", default=None, metavar="IP:PORT",
+                   help="send over TCP to a TAK client (e.g. 10.2.60.100:4242) instead of multicast")
     p.add_argument("--dry-run", action="store_true", help="print the CoT, send nothing")
     p.add_argument("--delete", action="store_true", help="delete the item with --uid instead of drawing")
     p.add_argument("--marker", action="store_true", help="drop a point marker (object) instead of a box")
@@ -249,15 +299,12 @@ def main():
     if a.dry_run:
         return
 
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, struct.pack("b", a.ttl))
-    if a.iface:
-        s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(a.iface))
-    for _ in range(a.count):
-        s.sendto(payload, (a.group, a.port))
-    s.close()
-    print(f"\nSent {a.count}x to {a.group}:{a.port}"
-          + (f" via {a.iface}" if a.iface else "") + f"  uid={a.uid}")
+    tx = Transport(a)
+    for _ in range(1 if a.tcp else a.count):
+        tx.send(cot)
+    tx.close()
+    dest = a.tcp if a.tcp else f"{a.group}:{a.port}"
+    print(f"\nSent to {dest}" + (f" via {a.iface}" if a.iface and not a.tcp else "") + f"  uid={a.uid}")
 
 
 if __name__ == "__main__":
