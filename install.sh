@@ -35,13 +35,57 @@ install_local() {
   fi
 }
 
+ensure_docker() {
+  need docker && return 0
+  warn "Docker is not installed."
+  case "$OS" in
+    Linux)
+      echo "I can install it with Docker's official script (get.docker.com),"
+      echo "which runs as root via sudo:"
+      echo "    curl -fsSL https://get.docker.com | sudo sh"
+      printf 'Install Docker now? [y/N] '; read -r a
+      [ "${a:-}" = "y" ] || [ "${a:-}" = "Y" ] || { err "Docker required. Aborted."; exit 1; }
+      need curl || { err "curl needed to fetch the installer."; exit 1; }
+      curl -fsSL https://get.docker.com | sudo sh
+      # start the daemon and let this user run docker without sudo
+      sudo systemctl enable --now docker 2>/dev/null || true
+      sudo usermod -aG docker "$USER" 2>/dev/null || true
+      need docker || { err "Docker install did not complete."; exit 1; }
+      warn "Added you to the 'docker' group — log out/in (or run 'newgrp docker')"
+      warn "if the next step reports a permission error."
+      ;;
+    Darwin)
+      if need brew; then
+        echo "Installing Docker Desktop via Homebrew:"
+        echo "    brew install --cask docker"
+        printf 'Install now? [y/N] '; read -r a
+        [ "${a:-}" = "y" ] || [ "${a:-}" = "Y" ] || { err "Docker required. Aborted."; exit 1; }
+        brew install --cask docker
+        warn "Docker Desktop installed — OPEN it once (Applications > Docker) so the"
+        warn "daemon starts, then re-run: ./install.sh docker"
+        exit 0
+      fi
+      err "Homebrew not found. Install Docker Desktop from"
+      err "https://www.docker.com/products/docker-desktop/ then re-run."
+      exit 1
+      ;;
+    *)
+      err "Automatic Docker install not supported on $OS. Install it manually."
+      exit 1
+      ;;
+  esac
+}
+
 install_docker() {
   say "Docker install"
-  if ! need docker; then
-    err "docker not found. Install Docker, then re-run."; exit 1
-  fi
+  ensure_docker
   if ! docker info >/dev/null 2>&1; then
-    err "Docker daemon not running. Start Docker and re-run."; exit 1
+    if [ "$OS" = "Darwin" ]; then
+      err "Docker daemon not running. Open Docker Desktop, then re-run."
+    else
+      err "Docker daemon not running. Start it (sudo systemctl start docker) and re-run."
+    fi
+    exit 1
   fi
   local compose="docker-compose.yml"
   if [ "$OS" != "Linux" ]; then
