@@ -15,14 +15,22 @@ import json
 import os
 import platform
 import re
+import socket
 import ssl
+import struct
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import websockets
+
+try:
+    import takproto  # decode TAK Protocol v2 (protobuf) mesh CoT
+except ImportError:
+    takproto = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # devices.json and the seed spreadsheet can be redirected with env vars so a
@@ -55,6 +63,13 @@ SENSOR_STALE = 150
 # and persist it. Re-sampled only on startup and when the user clicks Refresh.
 GPS_SAMPLES = 10
 SENSOR_GPS_FILE = os.environ.get("SENSOR_GPS_FILE", os.path.join(HERE, "sensor_gps.json"))
+
+# CoT ingest: listen to the TAK SA multicast and plot live tracks on the map.
+COT_LISTEN = os.environ.get("COT_LISTEN", "1") != "0"
+COT_GROUP = os.environ.get("COT_GROUP", "239.2.3.1")
+COT_PORT = int(os.environ.get("COT_PORT", "6969"))
+COT_IFACE = os.environ.get("COT_IFACE", "")  # source IP of the mesh NIC; "" = default
+COT_STALE_SEC = int(os.environ.get("COT_STALE_SEC", "60"))  # drop a track unseen this long
 
 _SYS = platform.system()
 if _SYS == "Darwin":
@@ -456,6 +471,118 @@ def remove_device(ip):
         save_devices(devices)
 
 
+# ---- CoT ingest -----------------------------------------------------------
+cot_tracks = {}  # uid -> {name, type, affil, dim, lat, lon, hae, course, speed, at}
+
+AFFIL = {"f": "friendly", "h": "hostile", "n": "neutral", "u": "unknown",
+         "s": "suspect", "j": "joker", "k": "faker", "p": "pending", "a": "assumedfriend"}
+DIM = {"A": "air", "G": "ground", "S": "sea", "U": "subsurface", "F": "sof", "P": "space"}
+
+
+def classify(cot_type):
+    """Affiliation + dimension from a 2525-style type like a-f-A-M-F-Q."""
+    parts = (cot_type or "").split("-")
+    affil = AFFIL.get(parts[1], "unknown") if len(parts) > 1 else "unknown"
+    dim = DIM.get(parts[2], "other") if len(parts) > 2 else "other"
+    return affil, dim
+
+
+def _store_track(uid, cot_type, name, lat, lon, hae, course, speed):
+    if not uid or lat is None or lon is None:
+        return
+    if lat == 0 and lon == 0:
+        return
+    if not (cot_type or "").startswith("a-"):
+        return  # only atoms (markers/tracks), not drawings/control messages
+    affil, dim = classify(cot_type)
+    with lock:
+        cot_tracks[uid] = {
+            "name": name or uid, "type": cot_type, "affil": affil, "dim": dim,
+            "lat": lat, "lon": lon, "hae": hae,
+            "course": course, "speed": speed, "at": time.time(),
+        }
+
+
+def _parse_proto(data):
+    msg = takproto.parse_proto(data)
+    if msg is None:
+        return
+    ev = msg.cotEvent
+    d = ev.detail
+    name = d.contact.callsign or None
+    course = d.track.course if d.track and d.track.speed else None
+    speed = d.track.speed if d.track else None
+    _store_track(ev.uid, ev.type, name, ev.lat, ev.lon, ev.hae,
+                 course if speed else None, speed or None)
+
+
+def _parse_xml(text):
+    root = ET.fromstring(text)
+    if root.tag != "event":
+        return
+    pt = root.find("point")
+    if pt is None:
+        return
+    detail = root.find("detail")
+    name = None
+    course = speed = None
+    if detail is not None:
+        c = detail.find("contact")
+        if c is not None:
+            name = c.get("callsign")
+        tr = detail.find("track")
+        if tr is not None:
+            course = float(tr.get("course")) if tr.get("course") else None
+            speed = float(tr.get("speed")) if tr.get("speed") else None
+    _store_track(root.get("uid"), root.get("type"), name,
+                 float(pt.get("lat")), float(pt.get("lon")),
+                 float(pt.get("hae") or 0), course, speed)
+
+
+def handle_cot(data):
+    try:
+        if data[:3] == b"\xbf\x01\xbf":
+            if takproto:
+                _parse_proto(data)
+        elif data.lstrip()[:1] == b"<":
+            _parse_xml(data.decode("utf-8", "ignore"))
+    except Exception:
+        pass  # a malformed datagram must not kill the listener
+
+
+def cot_listener():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    except (AttributeError, OSError):
+        pass
+    sock.bind(("", COT_PORT))
+    iface = socket.inet_aton(COT_IFACE) if COT_IFACE else struct.pack("=I", socket.INADDR_ANY)
+    mreq = socket.inet_aton(COT_GROUP) + iface
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    print(f"CoT ingest: joined {COT_GROUP}:{COT_PORT}"
+          + (f" on {COT_IFACE}" if COT_IFACE else ""), flush=True)
+    while True:
+        try:
+            data, _ = sock.recvfrom(65535)
+        except OSError:
+            continue
+        handle_cot(data)
+
+
+def tracks_snapshot(now):
+    out = []
+    with lock:
+        for uid, t in list(cot_tracks.items()):
+            if now - t["at"] > COT_STALE_SEC:
+                del cot_tracks[uid]
+                continue
+            out.append({"uid": uid, **{k: t[k] for k in
+                        ("name", "type", "affil", "dim", "lat", "lon", "hae", "course", "speed")}})
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=HERE, **kw)
@@ -476,6 +603,8 @@ class Handler(SimpleHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/status":
             self.send_json(200, snapshot())
+        elif path == "/api/tracks":
+            self.send_json(200, tracks_snapshot(time.time()))
         elif path in ("/", "/index.html"):
             self.path = "/index.html"
             super().do_GET()
@@ -534,6 +663,8 @@ if __name__ == "__main__":
             start_tracking(d["ip"])
     threading.Thread(target=power_poller, daemon=True).start()
     threading.Thread(target=sensor_poller, daemon=True).start()
+    if COT_LISTEN:
+        threading.Thread(target=cot_listener, daemon=True).start()
     load_sensor_gps()
     # One-shot sensor GPS sample at startup so the map isn't empty; after that it
     # only refreshes when the user clicks Refresh (no continuous streaming).

@@ -145,7 +145,8 @@
   <div id="mapView">
     <div class="maptools">
       <button class="ghost" id="refreshGps" title="Re-sample each sensor's GPS (10 readings averaged) and lock it">↻ Refresh sensor GPS</button>
-      <span class="legend"><span class="lg circle"></span> Radio <span class="lg square"></span> Sensor</span>
+      <span class="legend"><span class="lg circle"></span> Radio <span class="lg square"></span> Sensor ▲ CoT track</span>
+      <span id="trackcount" class="mapmsg"></span>
       <span id="gpsmsg" class="mapmsg"></span>
     </div>
     <div id="map"></div>
@@ -300,6 +301,9 @@ async function tick(force) {
     render(await (await fetch("/api/status")).json(), force);
     $("err").style.display = "none";
   } catch (e) { $("err").style.display = "block"; }
+  if (mapReady) {
+    try { updateTracks(await (await fetch("/api/tracks")).json()); } catch (e) {}
+  }
 }
 async function save(body) {
   const r = await fetch("/api/devices", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
@@ -418,6 +422,53 @@ function updateMarkers(data) {
     fitted = true;
   }
 }
+// ---- live CoT tracks (from the mesh) ----
+const AFFIL_COLOR = { friendly:"#3b82f6", hostile:"#ef4444", neutral:"#22c55e",
+  unknown:"#eab308", suspect:"#f59e0b", pending:"#9ca3af",
+  assumedfriend:"#3b82f6", joker:"#ef4444", faker:"#ef4444" };
+let trackMarkers = {};
+function trackIcon(t) {
+  const c = AFFIL_COLOR[t.affil] || "#eab308";
+  if (t.dim === "air") {
+    const rot = t.course != null ? `transform:rotate(${t.course}deg)` : "";
+    return L.divIcon({ className:"", iconSize:[20,20], iconAnchor:[10,10],
+      html:`<svg width="20" height="20" style="${rot}"><polygon points="10,1 17,18 3,18" fill="${c}" stroke="#fff" stroke-width="1.5"/></svg>` });
+  }
+  if (t.dim === "sea")
+    return L.divIcon({ className:"", iconSize:[16,16], iconAnchor:[8,8],
+      html:`<svg width="16" height="16"><polygon points="8,1 15,8 8,15 1,8" fill="${c}" stroke="#fff" stroke-width="1.5"/></svg>` });
+  if (t.dim === "ground")
+    return L.divIcon({ className:"", iconSize:[15,15], iconAnchor:[7.5,7.5],
+      html:`<svg width="15" height="15"><rect x="1.5" y="1.5" width="12" height="12" fill="${c}" stroke="#fff" stroke-width="1.5"/></svg>` });
+  return L.divIcon({ className:"", iconSize:[15,15], iconAnchor:[7.5,7.5],
+    html:`<svg width="15" height="15"><circle cx="7.5" cy="7.5" r="6" fill="${c}" stroke="#fff" stroke-width="1.5"/></svg>` });
+}
+function updateTracks(data) {
+  if (!mapReady) return;
+  const present = new Set();
+  for (const t of data) {
+    present.add(t.uid);
+    const sig = `${t.affil}|${t.dim}|${Math.round(t.course ?? -1)}`;
+    let m = trackMarkers[t.uid];
+    if (!m) {
+      m = trackMarkers[t.uid] = L.marker([t.lat, t.lon], { icon:trackIcon(t), zIndexOffset:1000 }).addTo(map);
+      m.bindTooltip("", { permanent:true, direction:"right", offset:[9,0], className:"mklabel trklabel" });
+    }
+    m.setLatLng([t.lat, t.lon]);
+    if (m._sig !== sig) { m.setIcon(trackIcon(t)); m._sig = sig; }
+    if (m._lbl !== t.name) { m.setTooltipContent(esc(t.name)); m._lbl = t.name; }
+    const kn = t.speed != null ? ` · ${(t.speed * 1.94384).toFixed(0)} kn` : "";
+    const hdg = t.course != null ? `<br>hdg ${Math.round(t.course)}°${kn}` : "";
+    const alt = t.hae ? `<br>alt ${Math.round(t.hae)} m` : "";
+    m.bindPopup(`<b>${esc(t.name)}</b><br><span style="color:#888">${esc(t.type)}</span>`
+      + `<br>${t.affil} ${t.dim}${hdg}${alt}`);
+  }
+  for (const uid of Object.keys(trackMarkers)) {
+    if (!present.has(uid)) { map.removeLayer(trackMarkers[uid]); delete trackMarkers[uid]; }
+  }
+  $("trackcount").textContent = data.length ? `${data.length} live CoT track${data.length>1?"s":""}` : "";
+}
+
 function focusOnMap(ip) {
   showTab("map");
   const d = last.find(x => x.ip === ip);

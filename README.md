@@ -67,6 +67,26 @@ default access level is Admin). Each sensor row shows:
 
 Port is `SENSOR_API_PORT` (default 8888). Sensors are polled every 30s.
 
+## Live CoT ingest (map overlay)
+
+The monitor joins the TAK SA multicast group and plots live **Cursor-on-Target
+tracks** on the Map tab — anything broadcasting on the mesh: radios' node CoT,
+WinTAK/ATAK EUDs, and sensor detections. Both wire formats are decoded: legacy
+XML and **TAK Protocol v2** protobuf (`bf 01 bf`, via `takproto`).
+
+- Tracks are drawn by **affiliation color** (friendly blue, hostile red, neutral
+  green, unknown yellow) and **dimension shape** (air = triangle rotated to
+  heading, ground = square, sea = diamond). Click one for type, heading, speed,
+  altitude. A track not heard for `COT_STALE_SEC` drops off.
+- On a **multi-homed host, set `COT_IFACE`** to the mesh NIC's IP or the join
+  lands on the wrong interface and sees nothing. Example (this site):
+  `COT_IFACE=10.2.60.254 python3 monitor.py`.
+- Served read-only at `/api/tracks`. Disable with `COT_LISTEN=0`.
+
+`tools/send_cot.py` is a test transmitter (box / marker / moving track /
+figure-8 air track; XML or `--proto`). Use `--ttl 32` so packets survive mesh
+hops.
+
 ## Configuration (environment variables)
 
 | Var | Default | Meaning |
@@ -77,6 +97,11 @@ Port is `SENSOR_API_PORT` (default 8888). Sensors are polled every 30s.
 | `POWER_GATEWAYS` | `10.2.60.215` | comma-separated radio(s) that report battery |
 | `RADIO_USER` | `factory` | radio login user |
 | `RADIO_PASSWORD` | `password` | radio login password |
+| `COT_LISTEN` | `1` | ingest live CoT tracks (`0` to disable) |
+| `COT_GROUP` | `239.2.3.1` | TAK SA multicast group |
+| `COT_PORT` | `6969` | TAK SA multicast port |
+| `COT_IFACE` | _(none)_ | mesh NIC IP to join on (set on multi-homed hosts) |
+| `COT_STALE_SEC` | `60` | drop a track unheard this long |
 
 ---
 
