@@ -49,6 +49,20 @@ switchable OpenStreetMap / Topographic / Satellite layers (Leaflet, vendored in
 > radio had a fix during development); verify the Lat/Lon once a radio acquires
 > satellites, and tell me if the field format differs.
 
+## Sensors (Discovair arrays)
+
+Devices in a group whose name starts with **sensor** are polled over their
+read-only JSON WebSocket API (`ws://<ip>:8888/api/v2`, no auth when the array's
+default access level is Admin). Each sensor row shows:
+
+- **Software version** (`GetSoftwareVersion`) — under the name, e.g. `v6.5.516`.
+- **Detection mode** (`GetMode`) — `Drone detection` (green) or `No processing`
+  (yellow — it isn't actively detecting).
+- **Mic-array health** (`GetDetectorStatus`) — `good` / `degraded` / `failed`
+  in the Power column; hover for serial + part number.
+
+Port is `SENSOR_API_PORT` (default 8888). Sensors are polled every 30s.
+
 ## Configuration (environment variables)
 
 | Var | Default | Meaning |

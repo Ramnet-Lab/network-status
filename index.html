@@ -59,12 +59,16 @@
          color:var(--accent); cursor:pointer; text-decoration:none; }
   .pin:hover { text-decoration:underline; }
   .pin.manual { color:var(--muted); }
+  .subline { display:block; margin-top:3px; font-size:12px; font-weight:400; color:var(--muted); }
+  .subline .mode-on { color:var(--green); }
+  .subline .mode-off { color:var(--yellow); }
   .ip { color:var(--muted); font-family:ui-monospace, Menlo, monospace; font-size:14px; }
   a.ip { text-decoration:none; }
   a.ip:hover { color:var(--accent); text-decoration:underline; }
   .pwr.low { color:var(--red); font-weight:600; }
   .pwr.mid { color:var(--yellow); font-weight:600; }
   .pwr.bat { color:var(--text); font-weight:600; }
+  .pwr.ok { color:var(--green); font-weight:600; }
   .num { font-variant-numeric:tabular-nums; }
   .muted { color:var(--muted); }
   .actions { display:flex; justify-content:flex-end; }
@@ -158,6 +162,13 @@ function powerRank(d) {
   return p.battery_pct != null ? p.battery_pct : 1e5;
 }
 function powerCell(d) {
+  // Sensors have no battery; use this column for mic-array health instead.
+  if (d.sensor && d.sensor.health) {
+    const h = d.sensor.health;
+    const cls = h === "good" ? "ok" : (h === "degraded" || h === "calculating" || h === "incomplete") ? "mid" : "low";
+    const tip = esc([d.sensor.serial && "S/N " + d.sensor.serial, d.sensor.part].filter(Boolean).join(" · "));
+    return `<span class="pwr ${cls}" title="${tip}">${esc(h)}</span>`;
+  }
   const p = d.power;
   if (!p) return `<span class="pwr muted">–</span>`;
   const tip = esc(`${p.display}${p.voltage ? " · " + p.voltage : ""}`);
@@ -167,6 +178,19 @@ function powerCell(d) {
   }
   if (/eliminator/i.test(p.display)) return `<span class="pwr muted" title="${tip}">Wall</span>`;
   return `<span class="pwr muted" title="${tip}">${esc(p.display || p.voltage || "–")}</span>`;
+}
+
+// Small line under a sensor's name: version + detection mode.
+function sensorLine(d) {
+  const s = d.sensor;
+  if (!s) return "";
+  const bits = [];
+  if (s.version) bits.push("v" + esc(s.version.split("-")[0]));
+  if (s.mode) {
+    const off = /no processing/i.test(s.mode);
+    bits.push(`<span class="${off ? "mode-off" : "mode-on"}">${esc(s.mode)}</span>`);
+  }
+  return bits.length ? `<span class="subline" title="${esc(s.version || "")}">${bits.join(" · ")}</span>` : "";
 }
 
 // ---------- status list ----------
@@ -190,7 +214,7 @@ function row(d) {
     : `<span class="lat num">${d.latency_ms == null ? "–" : d.latency_ms.toFixed(1) + " ms"}</span>`;
   return `<div class="row ${d.status}">
     <span class="dot"></span>
-    <span class="name">${esc(d.name)}${pinCell(d)}</span>
+    <span class="name">${esc(d.name)}${sensorLine(d)}${pinCell(d)}</span>
     ${ipCell(d)}
     <span class="stat muted">${LABEL[d.status]}</span>
     <span class="loss num">${d.loss_pct ?? "–"}%</span>

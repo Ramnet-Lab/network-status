@@ -45,6 +45,12 @@ RADIO_PASSWORD = os.environ.get("RADIO_PASSWORD", "password")
 POWER_EVERY = 15      # seconds between power polls
 POWER_STALE = 90      # drop a reading older than this
 
+# Discovair sensor array API (JSON over WebSocket at ws://<ip>:PORT/api/v2).
+# Read-only status: software version, detection mode, mic-array health.
+SENSOR_API_PORT = int(os.environ.get("SENSOR_API_PORT", "8888"))
+SENSOR_EVERY = 30     # seconds between sensor polls (these change rarely)
+SENSOR_STALE = 150
+
 _SYS = platform.system()
 if _SYS == "Darwin":
     PING_CMD = ["ping", "-c", "1", "-W", "1000"]  # -W in ms on macOS
@@ -243,6 +249,71 @@ def location_for(dev, now):
     return None
 
 
+sensor = {}  # ip -> {"version", "mode", "health", "serial", "part", "at"}
+
+
+async def _ws_cmd(ws, cmd, **extra):
+    await ws.send(json.dumps({"command": cmd, "id": cmd, **extra}))
+    for _ in range(20):
+        r = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+        if r.get("id") == cmd or r.get("command") == cmd:
+            return r
+    return None
+
+
+async def fetch_sensor(ip):
+    """Read software version, detection mode, and detector health from one sensor."""
+    url = f"ws://{ip}:{SENSOR_API_PORT}/api/v2"
+    async with websockets.connect(url, open_timeout=5) as ws:
+        rec = {}
+        ver = await _ws_cmd(ws, "GetSoftwareVersion")
+        if ver and ver.get("ok"):
+            rec["version"] = ver["data"].get("version")
+        mode = await _ws_cmd(ws, "GetMode")
+        if mode and mode.get("ok"):
+            rec["mode"] = mode["data"].get("mode")
+        dets = await _ws_cmd(ws, "ListDetectors")
+        ids = (dets or {}).get("data", {}).get("detectorIdentifiers") or []
+        if ids:
+            ds = await _ws_cmd(ws, "GetDetectorStatus", detectorIdentifier=ids[0])
+            if ds and ds.get("ok"):
+                d = ds["data"]
+                rec.update(health=d.get("health"), serial=d.get("serial"), part=d.get("partNumber"))
+        return rec if rec else None
+
+
+def sensor_poller():
+    async def round_once(ips):
+        async def one(ip):
+            try:
+                return ip, await fetch_sensor(ip)
+            except Exception:
+                return ip, None
+        return await asyncio.gather(*(one(ip) for ip in ips))
+
+    while True:
+        with lock:
+            ips = [d["ip"] for d in devices if d["group"].lower().startswith("sensor")]
+        if ips:
+            try:
+                results = asyncio.run(round_once(ips))
+            except Exception:
+                results = []
+            now = time.time()
+            with lock:
+                for ip, rec in results:
+                    if rec:
+                        sensor[ip] = {**rec, "at": now}
+        time.sleep(SENSOR_EVERY)
+
+
+def sensor_for(ip, now):
+    s = sensor.get(ip)
+    if not s or now - s["at"] > SENSOR_STALE:
+        return None
+    return {k: s.get(k) for k in ("version", "mode", "health", "serial", "part")}
+
+
 def snapshot():
     now = time.time()
     out = []
@@ -266,6 +337,7 @@ def snapshot():
                 "last_ok_ago": round(now - st["last_ok"]) if st["last_ok"] else None,
                 "power": power_for(d["ip"], now),
                 "location": location_for(d, now),
+                "sensor": sensor_for(d["ip"], now),
             })
     return out
 
@@ -369,5 +441,6 @@ if __name__ == "__main__":
         for d in devices:
             start_tracking(d["ip"])
     threading.Thread(target=power_poller, daemon=True).start()
+    threading.Thread(target=sensor_poller, daemon=True).start()
     print(f"AMP5 status: http://localhost:{PORT}  (binding {BIND}:{PORT})", flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
