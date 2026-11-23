@@ -107,6 +107,9 @@
   .mapnote { color:var(--muted); font-size:13px; margin:10px 2px 0; }
   .leaflet-popup-content { font:14px/1.4 -apple-system, system-ui, sans-serif; }
   .leaflet-popup-content b { font-size:15px; }
+  a.portal { display:inline-block; margin-top:8px; padding:5px 10px; background:var(--accent);
+    color:#fff; border-radius:6px; text-decoration:none; font-weight:600; font-size:13px; }
+  a.portal:hover { filter:brightness(1.1); }
 </style>
 </head>
 <body>
@@ -381,8 +384,13 @@ function updateMarkers(data) {
     present.add(d.ip);
     const { lat, lon } = d.location;
     const batt = d.power && d.power.battery_pct != null ? ` · 🔋 ${Math.round(d.power.battery_pct)}%` : "";
+    const url = ipLink(d);
+    const portal = url
+      ? `<br><a class="portal" href="${esc(url)}" target="_blank" rel="noopener">Open node portal ↗</a>`
+      : "";
     const popup = `<b>${esc(d.name)}</b><br>${esc(d.ip)}<br>${LABEL[d.status]}${batt}`
-      + `<br><span style="color:#888">${lat.toFixed(5)}, ${lon.toFixed(5)} (${d.location.source})</span>`;
+      + `<br><span style="color:#888">${lat.toFixed(5)}, ${lon.toFixed(5)} (${d.location.source})</span>`
+      + portal;
     const sig = `${d.status}|${shapeOf(d)}`;
     let m = markers[d.ip];
     if (!m) {
