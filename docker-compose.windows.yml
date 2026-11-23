@@ -1,0 +1,20 @@
+# Windows / Mac Docker Desktop — UI and demo only.
+# Docker Desktop has no real host networking, so the container sits behind the
+# WSL2/VM NAT and generally CANNOT ping your physical 10.2.60.x LAN or reach the
+# radios. The page loads and you can add/edit devices, but status may stay red
+# and battery will be blank. For a real Windows test, run monitor.py natively
+# (see README). Run:  docker compose -f docker-compose.windows.yml up -d --build
+services:
+  network-status:
+    build: .
+    container_name: network-status
+    restart: unless-stopped
+    cap_add:
+      - NET_RAW
+    ports:
+      - "8766:8766"             # http://localhost:8766 on the host
+    environment:
+      PORT: "8766"
+      BIND: "0.0.0.0"
+    volumes:
+      - ./data:/data

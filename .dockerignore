@@ -1,0 +1,9 @@
+data/
+*.log
+monitor.log
+__pycache__/
+*.pyc
+.DS_Store
+start.command
+run-windows.bat
+*.xlsx

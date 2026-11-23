@@ -1,0 +1,137 @@
+[
+  {
+    "name": "AS4 (Pump House)",
+    "ip": "10.2.60.212",
+    "group": "Radios"
+  },
+  {
+    "name": "AS2 (Runway)",
+    "ip": "10.2.60.204",
+    "group": "Radios"
+  },
+  {
+    "name": "AS16 (Water Tower)",
+    "ip": "10.2.60.214",
+    "group": "Radios"
+  },
+  {
+    "name": "Centerfield on bat",
+    "ip": "10.2.60.202",
+    "group": "Radios"
+  },
+  {
+    "name": "AS8 (Hush House)",
+    "ip": "10.2.60.205",
+    "group": "Radios"
+  },
+  {
+    "name": "AS7 (Canal) on bat",
+    "ip": "10.2.60.203",
+    "group": "Radios"
+  },
+  {
+    "name": "AS3 on bat",
+    "ip": "10.2.60.217",
+    "group": "Radios"
+  },
+  {
+    "name": "AS6 sensor",
+    "ip": "10.2.60.226",
+    "group": "sensor"
+  },
+  {
+    "name": "AS5 sensor",
+    "ip": "10.2.60.225",
+    "group": "sensor"
+  },
+  {
+    "name": "AS7 sensor",
+    "ip": "10.2.60.227",
+    "group": "sensor"
+  },
+  {
+    "name": "AS4 sensor",
+    "ip": "10.2.60.224",
+    "group": "sensor"
+  },
+  {
+    "name": "AS2 sensor",
+    "ip": "10.2.60.222",
+    "group": "sensor"
+  },
+  {
+    "name": "AS13 sensor",
+    "ip": "10.2.60.233",
+    "group": "sensor"
+  },
+  {
+    "name": "AS9 (crashgate 24) on bat",
+    "ip": "10.2.60.208",
+    "group": "Radios"
+  },
+  {
+    "name": "AS9 sensor",
+    "ip": "10.2.60.229",
+    "group": "sensor"
+  },
+  {
+    "name": "AS1 sensor",
+    "ip": "10.2.60.221",
+    "group": "sensor"
+  },
+  {
+    "name": "AS3 sensor",
+    "ip": "10.2.60.223",
+    "group": "sensor"
+  },
+  {
+    "name": "AS8 sensor",
+    "ip": "10.2.60.228",
+    "group": "sensor"
+  },
+  {
+    "name": "AS10 sensor",
+    "ip": "10.2.60.230",
+    "group": "sensor"
+  },
+  {
+    "name": "AS11 sensor",
+    "ip": "10.2.60.231",
+    "group": "sensor"
+  },
+  {
+    "name": "AS12 sensor",
+    "ip": "10.2.60.232",
+    "group": "sensor"
+  },
+  {
+    "name": "AS6 (canal) on bat",
+    "ip": "10.2.60.211",
+    "group": "Radios"
+  },
+  {
+    "name": "AS14 sensor",
+    "ip": "10.2.60.234",
+    "group": "sensor"
+  },
+  {
+    "name": "AS15 sensor",
+    "ip": "10.2.60.235",
+    "group": "sensor"
+  },
+  {
+    "name": "AS16 sensor",
+    "ip": "10.2.60.236",
+    "group": "sensor"
+  },
+  {
+    "name": "AS17",
+    "ip": "10.2.60.237",
+    "group": "sensor"
+  },
+  {
+    "name": "AS18 sensor",
+    "ip": "10.2.60.238",
+    "group": "sensor"
+  }
+]
