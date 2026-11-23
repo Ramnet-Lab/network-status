@@ -4,3 +4,5 @@ __pycache__/
 monitor.log
 .DS_Store
 .venv/
+sensor_gps.json
+sensor_gps.json.tmp

@@ -89,6 +89,15 @@
   .empty { color:var(--muted); margin-top:24px; }
 
   #mapView { display:none; }
+  .maptools { display:flex; align-items:center; gap:14px; margin-bottom:10px; flex-wrap:wrap; }
+  .maptools .ghost { border:1px solid var(--line); }
+  .legend { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; }
+  .lg { display:inline-block; width:12px; height:12px; background:var(--muted); border:2px solid #fff; vertical-align:middle; }
+  .lg.circle { border-radius:50%; } .lg.square { border-radius:3px; margin-left:8px; }
+  .mapmsg { color:var(--muted); font-size:13px; }
+  .mk { display:block; width:16px; height:16px; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.45); }
+  .mk.circle { border-radius:50%; }
+  .mk.square { border-radius:3px; }
   #map { height:72vh; min-height:420px; border-radius:10px; border:1px solid var(--line); }
   .mapnote { color:var(--muted); font-size:13px; margin:10px 2px 0; }
   .leaflet-popup-content { font:14px/1.4 -apple-system, system-ui, sans-serif; }
@@ -124,6 +133,11 @@
 
   <!-- MAP VIEW -->
   <div id="mapView">
+    <div class="maptools">
+      <button class="ghost" id="refreshGps" title="Re-sample each sensor's GPS (10 readings averaged) and lock it">↻ Refresh sensor GPS</button>
+      <span class="legend"><span class="lg circle"></span> Radio <span class="lg square"></span> Sensor</span>
+      <span id="gpsmsg" class="mapmsg"></span>
+    </div>
     <div id="map"></div>
     <p class="mapnote" id="mapnote"></p>
   </div>
@@ -349,23 +363,28 @@ function initMap() {
   updateMarkers(last);
 }
 function located(data) { return data.filter(d => d.location); }
+function shapeOf(d) { return d.group.toLowerCase().startsWith("sensor") ? "square" : "circle"; }
+function markerIcon(d) {
+  const color = COLOR[d.status] || COLOR.pending;
+  return L.divIcon({ className:"", iconSize:[18,18], iconAnchor:[9,9],
+    html:`<span class="mk ${shapeOf(d)}" style="background:${color}"></span>` });
+}
 function updateMarkers(data) {
   if (!mapReady) return;
   const present = new Set();
   for (const d of located(data)) {
     present.add(d.ip);
     const { lat, lon } = d.location;
-    const color = COLOR[d.status] || COLOR.pending;
     const batt = d.power && d.power.battery_pct != null ? ` · 🔋 ${Math.round(d.power.battery_pct)}%` : "";
     const popup = `<b>${esc(d.name)}</b><br>${esc(d.ip)}<br>${LABEL[d.status]}${batt}`
       + `<br><span style="color:#888">${lat.toFixed(5)}, ${lon.toFixed(5)} (${d.location.source})</span>`;
+    const sig = `${d.status}|${shapeOf(d)}`;
     let m = markers[d.ip];
     if (!m) {
-      m = markers[d.ip] = L.circleMarker([lat, lon],
-        { radius:9, weight:2, color:"#fff", fillOpacity:0.9 }).addTo(map);
+      m = markers[d.ip] = L.marker([lat, lon], { icon:markerIcon(d) }).addTo(map);
     }
     m.setLatLng([lat, lon]);
-    m.setStyle({ fillColor:color });
+    if (m._sig !== sig) { m.setIcon(markerIcon(d)); m._sig = sig; }
     m.bindPopup(popup);
   }
   for (const ip of Object.keys(markers)) {
@@ -373,8 +392,8 @@ function updateMarkers(data) {
   }
   const note = located(data).length;
   $("mapnote").textContent = note
-    ? `${note} device${note>1?"s":""} plotted. Radios with a live GPS fix update automatically; others use the coordinates you set (Edit a device on the Status tab).`
-    : "No device has coordinates yet. The radios currently report No GPS Fix. Set a location: Status tab → Edit a device → fill Lat/Lon.";
+    ? `${note} device${note>1?"s":""} plotted. Sensors use their locked GPS (↻ Refresh re-samples 10 readings); radios use a live fix when they have one, else coordinates you set (Edit on the Status tab).`
+    : "No device has coordinates yet. Click ↻ Refresh sensor GPS to sample sensors, or set a radio location: Status tab → Edit → Lat/Lon.";
   // Fit only once the container actually has a size, or bounds come out wrong.
   if (!fitted && note && map.getSize().x > 0) {
     const g = L.featureGroup(Object.values(markers));
@@ -408,6 +427,25 @@ function showTab(name) {
 }
 document.querySelector(".tabs").addEventListener("click", e => {
   if (e.target.dataset.tab) showTab(e.target.dataset.tab);
+});
+
+$("refreshGps").addEventListener("click", async () => {
+  const btn = $("refreshGps");
+  btn.disabled = true;
+  $("gpsmsg").textContent = "Sampling sensor GPS (10 readings each)…";
+  try {
+    const r = await fetch("/api/sample-gps", { method:"POST" });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "failed");
+    fitted = false;  // allow a re-fit to include newly placed sensors
+    await tick(true);
+    $("gpsmsg").textContent = `Locked ${j.located} of ${j.sampled} sensor${j.sampled===1?"":"s"}.`;
+  } catch (e) {
+    $("gpsmsg").textContent = "Refresh failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { $("gpsmsg").textContent = ""; }, 6000);
+  }
 });
 
 let startTab = "status";

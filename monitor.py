@@ -50,6 +50,11 @@ POWER_STALE = 90      # drop a reading older than this
 SENSOR_API_PORT = int(os.environ.get("SENSOR_API_PORT", "8888"))
 SENSOR_EVERY = 30     # seconds between sensor polls (these change rarely)
 SENSOR_STALE = 150
+# Sensor GPS is NOT streamed continuously (saves bandwidth). On demand we open
+# the GeoPosition stream briefly, average GPS_SAMPLES fixes, lock the position,
+# and persist it. Re-sampled only on startup and when the user clicks Refresh.
+GPS_SAMPLES = 10
+SENSOR_GPS_FILE = os.environ.get("SENSOR_GPS_FILE", os.path.join(HERE, "sensor_gps.json"))
 
 _SYS = platform.system()
 if _SYS == "Darwin":
@@ -240,10 +245,13 @@ def power_for(ip, now):
 
 
 def location_for(dev, now):
-    """Live radio GPS fix wins; otherwise the manually set coordinate."""
+    """Live radio GPS fix, then a locked sensor GPS, then a manual coordinate."""
     g = gps.get(dev["ip"])
     if g and g["lat"] is not None and now - g["at"] <= POWER_STALE:
         return {"lat": g["lat"], "lon": g["lon"], "source": "gps"}
+    sg = sensor_gps.get(dev["ip"])
+    if sg:
+        return {"lat": sg["lat"], "lon": sg["lon"], "source": "sensor"}
     if dev.get("lat") is not None and dev.get("lon") is not None:
         return {"lat": dev["lat"], "lon": dev["lon"], "source": "manual"}
     return None
@@ -312,6 +320,84 @@ def sensor_for(ip, now):
     if not s or now - s["at"] > SENSOR_STALE:
         return None
     return {k: s.get(k) for k in ("version", "mode", "health", "serial", "part")}
+
+
+# Locked sensor GPS positions (averaged once, then fixed). Persisted to disk.
+sensor_gps = {}  # ip -> {"lat", "lon", "n", "at"}
+
+
+def load_sensor_gps():
+    try:
+        with open(SENSOR_GPS_FILE) as f:
+            sensor_gps.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+
+
+def save_sensor_gps():
+    tmp = SENSOR_GPS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sensor_gps, f, indent=2)
+    os.replace(tmp, SENSOR_GPS_FILE)
+
+
+async def sample_sensor_gps(ip, n=GPS_SAMPLES):
+    """Average n GeoPosition fixes from one sensor, then stop the stream."""
+    url = f"ws://{ip}:{SENSOR_API_PORT}/api/v2"
+    async with websockets.connect(url, open_timeout=5) as ws:
+        async def cmd(c, **ex):
+            await ws.send(json.dumps({"command": c, "id": c, **ex}))
+            while True:
+                r = json.loads(await asyncio.wait_for(ws.recv(), timeout=8))
+                if r.get("id") == c:
+                    return r
+        dets = (await cmd("ListDetectors")).get("data", {}).get("detectorIdentifiers") or []
+        if not dets:
+            return None
+        det = dets[0]
+        await cmd("InitGeoPositionStream", detectorIdentifier=det)
+        lats, lons = [], []
+        try:
+            while len(lats) < n:
+                m = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                d = m.get("data") or {}
+                if m.get("stream") == "GeoPosition" and d.get("positionFix") \
+                        and isinstance(d.get("latitude"), (int, float)):
+                    lats.append(d["latitude"])
+                    lons.append(d["longitude"])
+        finally:
+            try:
+                await cmd("StopGeoPositionStream", detectorIdentifier=det)
+            except Exception:
+                pass
+        if not lats:
+            return None
+        return {"lat": sum(lats) / len(lats), "lon": sum(lons) / len(lons), "n": len(lats)}
+
+
+def refresh_sensor_gps():
+    """Sample every sensor's GPS concurrently and lock the averaged positions."""
+    with lock:
+        ips = [d["ip"] for d in devices if d["group"].lower().startswith("sensor")]
+
+    async def run():
+        async def one(ip):
+            try:
+                return ip, await sample_sensor_gps(ip)
+            except Exception:
+                return ip, None
+        return await asyncio.gather(*(one(ip) for ip in ips))
+
+    results = asyncio.run(run()) if ips else []
+    now = time.time()
+    located = 0
+    with lock:
+        for ip, rec in results:
+            if rec:
+                sensor_gps[ip] = {**rec, "at": now}
+                located += 1
+        save_sensor_gps()
+    return {"sampled": len(ips), "located": located}
 
 
 def snapshot():
@@ -399,6 +485,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if self.path == "/api/sample-gps":
+            try:
+                result = refresh_sensor_gps()
+            except Exception as e:
+                return self.send_json(500, {"error": str(e)})
+            return self.send_json(200, result)
         if self.path != "/api/devices":
             return self.send_error(404)
         try:
@@ -442,5 +534,9 @@ if __name__ == "__main__":
             start_tracking(d["ip"])
     threading.Thread(target=power_poller, daemon=True).start()
     threading.Thread(target=sensor_poller, daemon=True).start()
+    load_sensor_gps()
+    # One-shot sensor GPS sample at startup so the map isn't empty; after that it
+    # only refreshes when the user clicks Refresh (no continuous streaming).
+    threading.Thread(target=refresh_sensor_gps, daemon=True).start()
     print(f"AMP5 status: http://localhost:{PORT}  (binding {BIND}:{PORT})", flush=True)
     ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()

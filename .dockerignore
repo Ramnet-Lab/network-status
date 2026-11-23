@@ -7,3 +7,4 @@ __pycache__/
 start.command
 run-windows.bat
 *.xlsx
+sensor_gps.json
