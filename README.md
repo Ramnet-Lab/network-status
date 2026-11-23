@@ -9,6 +9,14 @@ own read-only management WebSocket. Served at `http://<host>:8766`.
 > only views the result; it never does the checks. So where you *run* this
 > decides whether checks work; where you *view* it does not.
 
+## Quick install
+
+```bash
+./install.sh          # menu: 1) local (Python venv)  2) Docker
+./install.sh local    # non-interactive
+./install.sh docker
+```
+
 ## Files
 
 | File | Purpose |
