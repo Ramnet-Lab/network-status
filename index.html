@@ -98,6 +98,11 @@
   .mk { display:block; width:16px; height:16px; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.45); }
   .mk.circle { border-radius:50%; }
   .mk.square { border-radius:3px; }
+  /* permanent name labels over markers */
+  .leaflet-tooltip.mklabel { background:rgba(15,20,25,.82); color:#fff; border:none;
+    box-shadow:none; font:600 12px/1.2 -apple-system, system-ui, sans-serif;
+    padding:2px 6px; border-radius:5px; white-space:nowrap; }
+  .leaflet-tooltip.mklabel::before { display:none; }  /* hide the little arrow */
   #map { height:72vh; min-height:420px; border-radius:10px; border:1px solid var(--line); }
   .mapnote { color:var(--muted); font-size:13px; margin:10px 2px 0; }
   .leaflet-popup-content { font:14px/1.4 -apple-system, system-ui, sans-serif; }
@@ -382,9 +387,11 @@ function updateMarkers(data) {
     let m = markers[d.ip];
     if (!m) {
       m = markers[d.ip] = L.marker([lat, lon], { icon:markerIcon(d) }).addTo(map);
+      m.bindTooltip("", { permanent:true, direction:"top", offset:[0,-8], className:"mklabel" });
     }
     m.setLatLng([lat, lon]);
     if (m._sig !== sig) { m.setIcon(markerIcon(d)); m._sig = sig; }
+    if (m._lbl !== d.name) { m.setTooltipContent(esc(d.name)); m._lbl = d.name; }
     m.bindPopup(popup);
   }
   for (const ip of Object.keys(markers)) {
